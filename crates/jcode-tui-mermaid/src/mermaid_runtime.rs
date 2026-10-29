@@ -221,6 +221,29 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
 ///   critical path. Users behind multiplexers that hide the outer terminal can
 ///   still opt into the authoritative probe with
 ///   `JCODE_MERMAID_PICKER_PROBE=1`.
+/// Maestri's canvas terminals are xterm.js and identify only through
+/// `TERM_PROGRAM=Maestri` over a bland `TERM`. Whether they render images
+/// depends on the build carrying `@xterm/addon-image`, which no env var
+/// reveals, so these terminals are probed: xterm.js answers the query at once,
+/// and the addon adds sixel to DA1 and enables the cell-size report.
+pub(super) fn is_maestri_terminal(term_program: Option<&str>) -> bool {
+    term_program.is_some_and(|p| p.trim().eq_ignore_ascii_case("maestri"))
+}
+
+/// The xterm.js image addon speaks both sixel and iTerm2 inline images but
+/// only advertises sixel. iTerm2 carries the PNG at full color while sixel is
+/// capped at a 256-color palette, so a Maestri sixel answer means iTerm2.
+pub(super) fn adjust_probed_protocol_for_maestri(
+    protocol: ProtocolType,
+    maestri: bool,
+) -> ProtocolType {
+    if maestri && protocol == ProtocolType::Sixel {
+        ProtocolType::Iterm2
+    } else {
+        protocol
+    }
+}
+
 pub(super) fn decide_picker_init_mode(
     probe_override: Option<bool>,
     _env_protocol: Option<ProtocolType>,
@@ -334,7 +357,9 @@ pub(super) fn iterm2_images_opt_in() -> bool {
         .unwrap_or(false)
 }
 
-fn query_font_size() -> (u16, u16) {
+/// Cell size from the pty's pixel dimensions, or `None` when the terminal
+/// leaves them at zero (xterm.js behind node-pty does).
+fn measured_font_size() -> Option<(u16, u16)> {
     match crossterm::terminal::window_size() {
         Ok(ws) if ws.columns > 0 && ws.rows > 0 && ws.width > 0 && ws.height > 0 => {
             let fw = ws.width / ws.columns;
@@ -344,13 +369,24 @@ fn query_font_size() -> (u16, u16) {
                     "Detected terminal font size: {}x{} pixels/cell (window {}x{} px, {}x{} cells)",
                     fw, fh, ws.width, ws.height, ws.columns, ws.rows
                 ));
-                (fw, fh)
+                Some((fw, fh))
             } else {
-                DEFAULT_PICKER_FONT_SIZE
+                None
             }
         }
-        _ => DEFAULT_PICKER_FONT_SIZE,
+        _ => None,
     }
+}
+
+fn picker_with_font_size(font_size: (u16, u16)) -> Picker {
+    // `from_fontsize` is deprecated upstream in favor of `from_query_stdio` /
+    // `halfblocks`, but neither lets us inject an already-measured cell size:
+    // `halfblocks` hardcodes 10x20 and there is no public font-size setter. We
+    // deliberately keep it to stay correct on HiDPI terminals.
+    #[allow(deprecated)]
+    let mut picker = Picker::from_fontsize(font_size);
+    picker.set_protocol_type(ProtocolType::Halfblocks);
+    picker
 }
 
 fn fast_picker() -> Picker {
@@ -359,14 +395,8 @@ fn fast_picker() -> Picker {
     // wrong on HiDPI displays: images get scaled for 20px rows while Kitty
     // renders them at the true row height, so placeholders/borders end up much
     // taller than the picture.
-    let font_size = query_font_size();
-    // `from_fontsize` is deprecated upstream in favor of `from_query_stdio` /
-    // `halfblocks`, but neither lets us inject an already-measured cell size:
-    // `halfblocks` hardcodes 10x20 and there is no public font-size setter. We
-    // deliberately keep it to stay correct on HiDPI terminals.
-    #[allow(deprecated)]
-    let mut picker = Picker::from_fontsize(font_size);
-    picker.set_protocol_type(ProtocolType::Halfblocks);
+    let mut picker =
+        picker_with_font_size(measured_font_size().unwrap_or(DEFAULT_PICKER_FONT_SIZE));
     if let Some(protocol) = infer_protocol_from_env(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -398,6 +428,24 @@ fn probe_picker() -> Picker {
                     "Probe reported iTerm2 images, but iTerm2 image output is disabled;                      falling back to halfblocks",
                 );
                 protocol = ProtocolType::Halfblocks;
+            }
+            protocol = adjust_probed_protocol_for_maestri(
+                protocol,
+                is_maestri_terminal(std::env::var("TERM_PROGRAM").ok().as_deref()),
+            );
+            // A probe that found a graphics protocol also answered the
+            // cell-size query (otherwise ratatui-image returns its halfblocks
+            // default), so its cell size is real. Prefer it when the pty
+            // carries no pixel dimensions, as in xterm.js terminals.
+            if probed.protocol_type() != ProtocolType::Halfblocks
+                && measured_font_size().is_none()
+            {
+                let (fw, fh) = probed.font_size();
+                crate::log_info(&format!(
+                    "Using probed terminal font size: {}x{} pixels/cell",
+                    fw, fh
+                ));
+                picker = picker_with_font_size((fw, fh));
             }
             crate::log_info(&format!(
                 "Mermaid picker stdio probe detected protocol: {:?}",
@@ -455,7 +503,13 @@ pub fn init_picker() {
             .ok()
             .as_deref()
             .and_then(parse_env_bool);
-        let mode = decide_picker_init_mode(probe_override, env_protocol, multiplexer);
+        let mode = if probe_override.is_none()
+            && is_maestri_terminal(std::env::var("TERM_PROGRAM").ok().as_deref())
+        {
+            PickerInitMode::Probe
+        } else {
+            decide_picker_init_mode(probe_override, env_protocol, multiplexer)
+        };
         crate::log_info(&format!(
             "Mermaid picker init: mode={:?} multiplexer={} env_protocol={:?} probe_override={:?}",
             mode,
@@ -984,6 +1038,31 @@ mod tests {
                 ProtocolType::Kitty
             );
         }
+    }
+
+    #[test]
+    fn maestri_terminal_is_recognized_by_term_program() {
+        assert!(is_maestri_terminal(Some("Maestri")));
+        assert!(is_maestri_terminal(Some("maestri")));
+        assert!(!is_maestri_terminal(Some("ghostty")));
+        assert!(!is_maestri_terminal(None));
+    }
+
+    #[test]
+    fn maestri_sixel_answer_uses_iterm2_images() {
+        assert_eq!(
+            adjust_probed_protocol_for_maestri(ProtocolType::Sixel, true),
+            ProtocolType::Iterm2
+        );
+        // Without the image addon xterm.js reports no graphics at all.
+        assert_eq!(
+            adjust_probed_protocol_for_maestri(ProtocolType::Halfblocks, true),
+            ProtocolType::Halfblocks
+        );
+        assert_eq!(
+            adjust_probed_protocol_for_maestri(ProtocolType::Sixel, false),
+            ProtocolType::Sixel
+        );
     }
 
     #[test]
