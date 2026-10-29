@@ -749,18 +749,13 @@ impl Agent {
                             execution_mode: ToolExecutionMode::AgentTurn,
                         };
                         crate::telemetry::record_tool_call();
-                        let tool_result = tokio::select! {
-                            biased;
-                            _ = self.graceful_shutdown.notified() => {
-                                Err(anyhow::anyhow!("Tool interrupted by cancellation"))
-                            }
-                            result = super::turn_streaming_mpsc::execute_with_background(
-                                                    self.registry.clone(),
-                                                    tool_name.clone(),
-                                                    ToolCall::normalize_input_to_object(input),
-                                                    ctx,
-                                                ) => result,
-                        };
+                        let tool_result = super::turn_streaming_mpsc::execute_with_background(
+                            self.registry.clone(),
+                            tool_name.clone(),
+                            ToolCall::normalize_input_to_object(input),
+                            ctx,
+                        )
+                        .await;
                         if tool_result.is_err() {
                             crate::telemetry::record_tool_failure();
                         }
@@ -1252,18 +1247,13 @@ impl Agent {
                     model: Some(self.provider.model()),
                 }));
 
-                let result = tokio::select! {
-                    biased;
-                    _ = self.graceful_shutdown.notified() => {
-                        Err(anyhow::anyhow!("Tool interrupted by cancellation"))
-                    }
-                    result = super::turn_streaming_mpsc::execute_with_background(
-                                    self.registry.clone(),
-                                    tc.name.clone(),
-                                    tc.input.clone(),
-                                    ctx,
-                                ) => result,
-                };
+                let result = super::turn_streaming_mpsc::execute_with_background(
+                    self.registry.clone(),
+                    tc.name.clone(),
+                    tc.input.clone(),
+                    ctx,
+                )
+                .await;
                 crate::telemetry::record_tool_call();
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();

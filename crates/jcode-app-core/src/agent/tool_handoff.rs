@@ -13,12 +13,25 @@ pub(in crate::agent) async fn execute_with_background(
     input: serde_json::Value,
     ctx: ToolContext,
 ) -> Result<crate::tool::ToolOutput> {
+    let shutdown = ctx.graceful_shutdown_signal.clone();
     let auto_background = auto_background_allowed(&name, &input);
     let session_id = ctx.session_id.clone();
     let tool_name = name.clone();
     let mut work = tokio::spawn(async move { registry.execute(&tool_name, input, ctx).await });
     tokio::select! {
         biased;
+        _ = async {
+            if let Some(shutdown) = shutdown {
+                shutdown.notified().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => {
+            // The helper owns this foreground task. Cancel it before returning
+            // so dropping a blocking turn cannot leave untracked tool work.
+            work.abort();
+            Err(anyhow::anyhow!("Tool interrupted by cancellation"))
+        }
         result = &mut work => result.map_err(|e| anyhow::anyhow!("Tool task panicked: {}", e))?,
         _ = tokio::time::sleep(TOOL_FOREGROUND_BUDGET), if auto_background => {
             let info = crate::background::global().adopt(&name, &session_id, work).await;
