@@ -192,16 +192,17 @@ impl Agent {
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
             self.last_status_detail = None;
             self.provider.set_session_id(&self.session.id);
-            let completion = self
-                .provider
-                .complete_split(
+            let completion = tokio::select! {
+                biased;
+                _ = self.graceful_shutdown.notified() => break,
+                completion = self.provider.complete_split(
                     send_messages,
                     &tools,
                     &split_prompt.static_part,
                     &split_prompt.dynamic_part,
                     self.provider_session_id.as_deref(),
-                )
-                .await;
+                ) => completion,
+            };
             self.sync_bound_account_route();
             let mut stream = match completion {
                 Ok(stream) => stream,
@@ -282,7 +283,13 @@ impl Agent {
             let mut openai_native_compaction: Option<(String, usize)> = None;
 
             let mut retry_after_compaction = false;
-            while let Some(event) = stream.next().await {
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = self.graceful_shutdown.notified() => break,
+                    event = stream.next() => event,
+                };
+                let Some(event) = event else { break };
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {
@@ -742,13 +749,18 @@ impl Agent {
                             execution_mode: ToolExecutionMode::AgentTurn,
                         };
                         crate::telemetry::record_tool_call();
-                        let tool_result = super::turn_streaming_mpsc::execute_with_background(
-                            self.registry.clone(),
-                            tool_name.clone(),
-                            ToolCall::normalize_input_to_object(input),
-                            ctx,
-                        )
-                        .await;
+                        let tool_result = tokio::select! {
+                            biased;
+                            _ = self.graceful_shutdown.notified() => {
+                                Err(anyhow::anyhow!("Tool interrupted by cancellation"))
+                            }
+                            result = super::turn_streaming_mpsc::execute_with_background(
+                                                    self.registry.clone(),
+                                                    tool_name.clone(),
+                                                    ToolCall::normalize_input_to_object(input),
+                                                    ctx,
+                                                ) => result,
+                        };
                         if tool_result.is_err() {
                             crate::telemetry::record_tool_failure();
                         }
@@ -1089,6 +1101,21 @@ impl Agent {
             let mut executed_valid_call = false;
             let mut tool_results_dirty = false;
             for tc in tool_calls {
+                // Debug/server-initiated turns use this loop while holding the
+                // agent mutex. They must observe Esc just like the TUI loop;
+                // otherwise a bg wait keeps every attached client blocked.
+                if self.is_graceful_shutdown() {
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id,
+                            content: "[Skipped: user interrupted]".to_string(),
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
+                }
                 let message_id = assistant_message_id
                     .clone()
                     .unwrap_or_else(|| self.session.id.clone());
@@ -1225,13 +1252,18 @@ impl Agent {
                     model: Some(self.provider.model()),
                 }));
 
-                let result = super::turn_streaming_mpsc::execute_with_background(
-                    self.registry.clone(),
-                    tc.name.clone(),
-                    tc.input.clone(),
-                    ctx,
-                )
-                .await;
+                let result = tokio::select! {
+                    biased;
+                    _ = self.graceful_shutdown.notified() => {
+                        Err(anyhow::anyhow!("Tool interrupted by cancellation"))
+                    }
+                    result = super::turn_streaming_mpsc::execute_with_background(
+                                    self.registry.clone(),
+                                    tc.name.clone(),
+                                    tc.input.clone(),
+                                    ctx,
+                                ) => result,
+                };
                 crate::telemetry::record_tool_call();
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();

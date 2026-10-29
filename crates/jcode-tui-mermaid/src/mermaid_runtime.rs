@@ -437,8 +437,7 @@ fn probe_picker() -> Picker {
             // cell-size query (otherwise ratatui-image returns its halfblocks
             // default), so its cell size is real. Prefer it when the pty
             // carries no pixel dimensions, as in xterm.js terminals.
-            if probed.protocol_type() != ProtocolType::Halfblocks
-                && measured_font_size().is_none()
+            if probed.protocol_type() != ProtocolType::Halfblocks && measured_font_size().is_none()
             {
                 let (fw, fh) = probed.font_size();
                 crate::log_info(&format!(

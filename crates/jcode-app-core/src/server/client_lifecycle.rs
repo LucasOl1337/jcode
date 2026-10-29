@@ -1064,11 +1064,6 @@ pub(super) async fn handle_client(
                     if continue_on_disconnect && let Ok(mut agent) = agent.try_lock() {
                         agent.set_stdin_request_tx(stdin_req_tx.clone());
                     }
-                    let mut connections = client_connections.write().await;
-                    if let Some(info) = connections.get_mut(&client_connection_id) {
-                        info.is_processing = true;
-                        info.current_tool_name = None;
-                    }
                 }
                 let peer_content = content.clone();
                 start_processing_message(
@@ -1100,6 +1095,10 @@ pub(super) async fn handle_client(
                     },
                 )
                 .await;
+                if let Some(info) = client_connections.write().await.get_mut(&client_connection_id) {
+                    info.is_processing = client_is_processing;
+                    info.current_tool_name = None;
+                }
                 // Other windows attached to this session only see the turn's
                 // stream events, never the message that started it. Tell them
                 // so the prompt (or auto-poke notice) shows up everywhere.
@@ -3366,9 +3365,19 @@ async fn start_processing_message(
         return;
     }
 
-    // Serialize recovery acceptance with the agent lock across connections.
-    // A stale History frame may submit the same reminder after its first turn.
-    let mut agent_guard = agent.lock().await;
+    let owned_worker = swarm
+        .members
+        .read()
+        .await
+        .get(client_session_id)
+        .is_some_and(|member| member.report_back_to_session_id.is_some());
+    // Serialize recovery acceptance without blocking this connection's reader:
+    // it must remain available to receive cancellation while another turn owns
+    // the agent. Keep upstream's recovery deduplication under the same lock.
+    let Ok(mut agent_guard) = agent.try_lock() else {
+        send_agent_busy_error(id, "message", client_session_id, false, client_event_tx);
+        return;
+    };
     if let Some(reminder) = system_reminder.as_deref() {
         match super::reload_recovery::is_delivered_continuation(client_session_id, reminder) {
             Ok(true) => {
@@ -3408,6 +3417,11 @@ async fn start_processing_message(
             client_session_id, id, error
         ));
     }
+    if owned_worker {
+        agent_guard.set_inline_output_tap(true);
+    }
+    let start_message_index = agent_guard.message_count();
+    let pending_queue = agent_guard.soft_interrupt_queue();
     drop(agent_guard);
 
     *state.client_is_processing = true;
@@ -3426,22 +3440,6 @@ async fn start_processing_message(
     )
     .await;
 
-    let owned_worker = swarm
-        .members
-        .read()
-        .await
-        .get(client_session_id)
-        .is_some_and(|member| member.report_back_to_session_id.is_some());
-    let (start_message_index, pending_queue) = {
-        let mut agent_guard = agent.lock().await;
-        if owned_worker {
-            agent_guard.set_inline_output_tap(true);
-        }
-        (
-            agent_guard.message_count(),
-            agent_guard.soft_interrupt_queue(),
-        )
-    };
     let agent = Arc::clone(agent);
     let report_agent = Arc::clone(&agent);
     let tx = super::state::session_event_fanout_sender_with_fallback(

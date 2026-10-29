@@ -65,6 +65,69 @@ fn cancel_soft_interrupts_by_id_reports_each_requested_id_exactly_once() {
 }
 
 #[tokio::test]
+async fn contabo_message_on_busy_detached_turn_does_not_block_connection_reader() {
+    let provider: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
+        forked: Arc::new(AtomicBool::new(false)),
+    });
+    let agent = Arc::new(Mutex::new(Agent::new(provider, Registry::empty())));
+    let _busy = agent.lock().await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (done_tx, _done_rx) = mpsc::unbounded_channel();
+    let members = Arc::new(RwLock::new(HashMap::new()));
+    let swarms = Arc::new(RwLock::new(HashMap::new()));
+    let history = Arc::new(RwLock::new(std::collections::VecDeque::new()));
+    let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (swarm_tx, _) = broadcast::channel(8);
+    let mut processing = false;
+    let mut message_id = None;
+    let mut session_id = None;
+    let mut task = None;
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        start_processing_message(
+            ProcessingMessage {
+                id: 900,
+                content: "new prompt after cancel".into(),
+                images: Vec::new(),
+                system_reminder: None,
+                active_skill: None,
+                server_failover: false,
+            },
+            "session_busy_detached_message",
+            &mut ProcessingState {
+                client_is_processing: &mut processing,
+                message_id: &mut message_id,
+                session_id: &mut session_id,
+                task: &mut task,
+            },
+            &agent,
+            &event_tx,
+            &done_tx,
+            Vec::new(),
+            &SwarmStatusRefs {
+                members: &members,
+                swarms_by_id: &swarms,
+                event_history: &history,
+                event_counter: &counter,
+                event_tx: &swarm_tx,
+            },
+        ),
+    )
+    .await
+    .expect("new prompt blocked the reader, preventing subsequent Esc");
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(ServerEvent::Error {
+            id: 900,
+            retry_after_secs: Some(1),
+            ..
+        })
+    ));
+    assert!(!processing);
+    assert!(message_id.is_none() && session_id.is_none() && task.is_none());
+}
+
+#[tokio::test]
 async fn session_control_handle_does_not_wait_for_busy_agent_lock() {
     let provider: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
         forked: Arc::new(AtomicBool::new(false)),

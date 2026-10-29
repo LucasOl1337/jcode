@@ -14,6 +14,9 @@ mod cache_session_affinity;
 #[path = "agent_tests/tool_streaming.rs"]
 mod tool_streaming;
 
+#[path = "agent_tests/blocking_cancel.rs"]
+mod blocking_cancel;
+
 #[path = "agent_tests/concurrency.rs"]
 mod concurrency;
 

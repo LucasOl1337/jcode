@@ -23,18 +23,27 @@ pub(super) struct DebugInterruptContext {
 
 impl DebugInterruptContext {
     async fn control_handle(&self) -> Option<SessionControlHandle> {
-        let queue = self
-            .soft_interrupt_queues
-            .read()
-            .await
-            .get(&self.session_id)
-            .cloned()?;
         let signal = self
             .shutdown_signals
             .read()
             .await
             .get(&self.session_id)
-            .cloned()?;
+            .cloned()
+            .or_else(|| {
+                crate::turn_cancel_registry::active_turn_signals(&self.session_id)
+                    .into_iter()
+                    .next()
+            })?;
+        // A headless/debug turn can be live without a TUI registration. Its
+        // active-turn signal is sufficient to cancel; do not fall back to
+        // acquiring the mutex held by the turn we are trying to interrupt.
+        let queue = self
+            .soft_interrupt_queues
+            .read()
+            .await
+            .get(&self.session_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(Vec::new())));
         Some(SessionControlHandle::cancel_only(
             self.session_id.clone(),
             queue,
@@ -927,6 +936,35 @@ mod tests {
             "expected reload acknowledgement output, got: {}",
             output
         );
+    }
+
+    #[tokio::test]
+    async fn contabo_debug_cancel_reaches_headless_turn_without_tui_registration() {
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider);
+        let agent = Arc::new(AsyncMutex::new(Agent::new(provider, Registry::empty())));
+        let guard = agent.lock().await;
+        let session_id = guard.session_id().to_string();
+        let signal = guard.graceful_shutdown_signal();
+        let _turn = crate::turn_cancel_registry::register_active_turn(&session_id, signal.clone());
+        let context = DebugInterruptContext {
+            session_id,
+            shutdown_signals: Arc::new(RwLock::new(HashMap::new())),
+            soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
+        };
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            execute_debug_command(
+                agent.clone(),
+                "cancel",
+                Arc::new(RwLock::new(HashMap::new())),
+                None,
+                Some(context),
+            ),
+        )
+        .await
+        .expect("headless cancel waited for its own busy mutex")
+        .unwrap();
+        assert!(signal.is_set());
     }
 
     #[tokio::test]
