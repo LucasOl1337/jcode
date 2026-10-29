@@ -1197,11 +1197,6 @@ pub(super) async fn handle_client(
                     if continue_on_disconnect && let Ok(mut agent) = agent.try_lock() {
                         agent.set_stdin_request_tx(stdin_req_tx.clone());
                     }
-                    let mut connections = client_connections.write().await;
-                    if let Some(info) = connections.get_mut(&client_connection_id) {
-                        info.is_processing = true;
-                        info.current_tool_name = None;
-                    }
                 }
                 let peer_content = content.clone();
                 start_processing_message(
@@ -1233,6 +1228,10 @@ pub(super) async fn handle_client(
                     },
                 )
                 .await;
+                if let Some(info) = client_connections.write().await.get_mut(&client_connection_id) {
+                    info.is_processing = client_is_processing;
+                    info.current_tool_name = None;
+                }
                 // Other windows attached to this session only see the turn's
                 // stream events, never the message that started it. Tell them
                 // so the prompt (or auto-poke notice) shows up everywhere.
@@ -3435,19 +3434,28 @@ async fn start_processing_message(
         return;
     }
 
-    if !agent
-        .lock()
-        .await
-        .set_remote_active_skill(active_skill.clone())
-    {
-        let skill_name = active_skill.as_deref().unwrap_or_default();
-        let _ = client_event_tx.send(ServerEvent::Error {
-            id,
-            message: format!("Skill '{skill_name}' is not installed on the server"),
-            retry_after_secs: None,
-        });
-        return;
-    }
+    // Another attachment or a debug/background turn can own this agent even
+    // when this connection has no processing task. Never park the connection's
+    // reader on that mutex: it would stop reading subsequent cancel requests.
+    let (start_message_index, pending_queue) = {
+        let Ok(mut agent_guard) = agent.try_lock() else {
+            send_agent_busy_error(id, "message", client_session_id, false, client_event_tx);
+            return;
+        };
+        if !agent_guard.set_remote_active_skill(active_skill.clone()) {
+            let skill_name = active_skill.as_deref().unwrap_or_default();
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!("Skill '{skill_name}' is not installed on the server"),
+                retry_after_secs: None,
+            });
+            return;
+        }
+        (
+            agent_guard.message_count(),
+            agent_guard.soft_interrupt_queue(),
+        )
+    };
 
     *state.client_is_processing = true;
     *state.message_id = Some(id);
@@ -3478,13 +3486,6 @@ async fn start_processing_message(
     )
     .await;
 
-    let (start_message_index, pending_queue) = {
-        let agent_guard = agent.lock().await;
-        (
-            agent_guard.message_count(),
-            agent_guard.soft_interrupt_queue(),
-        )
-    };
     let agent = Arc::clone(agent);
     let report_agent = Arc::clone(&agent);
     let tx = super::state::session_event_fanout_sender_with_fallback(
