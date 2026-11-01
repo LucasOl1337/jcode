@@ -2246,3 +2246,109 @@ fn bare_openai_compatible_model_ids_route_to_their_profile_not_the_active_provid
         );
     });
 }
+
+/// Records the model id it receives, accepting any id like a gateway
+/// Anthropic runtime whose profile declares opaque model ids.
+#[derive(Clone, Default)]
+struct RecordingAnthropicProfileRuntime {
+    selected_model: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for RecordingAnthropicProfileRuntime {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        unimplemented!("RecordingAnthropicProfileRuntime")
+    }
+
+    fn name(&self) -> &str {
+        "Anthropic"
+    }
+
+    fn model(&self) -> String {
+        self.selected_model
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_model(&self, model: &str) -> Result<()> {
+        *self.selected_model.lock().unwrap() = Some(model.to_string());
+        Ok(())
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+#[test]
+fn anthropic_compatible_profile_keeps_slash_model_id_literal() {
+    // Bug 2 (30/10/2026): with an active `type = "anthropic-compatible"`
+    // profile, `-m 'cc/claude-sonnet-5-5(medium)'` failed with
+    // "OPENROUTER_API_KEY not found" because the `/` routed it to OpenRouter.
+    with_clean_provider_test_env(|| {
+        let jcode_home = std::env::var("JCODE_HOME").expect("JCODE_HOME");
+        std::fs::write(
+            std::path::PathBuf::from(jcode_home).join("config.toml"),
+            r#"
+[providers.9router-anthropic]
+type = "anthropic-compatible"
+base_url = "http://127.0.0.1:18431/v1"
+auth = "bearer"
+api_key_env = "JCODE_TEST_9ROUTER_KEY"
+default_model = "cc/claude-opus-5-5(high)"
+
+[[providers.9router-anthropic.models]]
+id = "cc/claude-sonnet-5-5(medium)"
+"#,
+        )
+        .expect("write test config.toml");
+        crate::config::invalidate_config_cache();
+        crate::env::set_var("JCODE_NAMED_PROVIDER_PROFILE", "9router-anthropic");
+
+        let runtime = RecordingAnthropicProfileRuntime::default();
+        let provider = MultiProvider {
+            anthropic: RwLock::new(Some(Arc::new(runtime.clone()) as Arc<dyn Provider>)),
+            openai: RwLock::new(None),
+            copilot_api: RwLock::new(None),
+            antigravity: RwLock::new(None),
+            gemini: RwLock::new(None),
+            cursor: RwLock::new(None),
+            bedrock: RwLock::new(None),
+            openrouter: RwLock::new(None),
+            openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
+            active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
+            active: RwLock::new(ActiveProvider::Claude),
+            startup_notices: RwLock::new(Vec::new()),
+            initial_provider: None,
+            catalog_scope: next_catalog_scope(),
+            routes_memo: std::sync::Mutex::new(None),
+            post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let rt = enter_test_runtime();
+        let _runtime_guard = rt.enter();
+
+        for model in ["cc/claude-sonnet-5-5(medium)", "cc/claude-opus-5-5(high)"] {
+            provider
+                .set_model(model)
+                .unwrap_or_else(|err| panic!("{model} must stay on the profile: {err:#}"));
+            assert_eq!(runtime.model(), model, "id must reach the runtime literally");
+            assert_eq!(provider.active_provider(), ActiveProvider::Claude);
+        }
+
+        // Ids the profile does not declare keep the global routing.
+        assert!(provider.set_model("someone/else-model").is_err());
+        assert_eq!(runtime.model(), "cc/claude-opus-5-5(high)");
+
+        crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+        crate::config::invalidate_config_cache();
+    });
+}

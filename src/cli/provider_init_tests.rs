@@ -963,6 +963,104 @@ id = "llama3.1:8b"
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,
+    reason = "test env locks intentionally stay held across provider init to isolate process-global runtime env"
+)]
+async fn auto_provider_uses_config_default_anthropic_compatible_profile() {
+    // Bug 1 (30/10/2026): `default_provider` naming a `type =
+    // "anthropic-compatible"` profile failed with "No credentials configured
+    // for provider auto-detection", because the probe asked the OpenRouter
+    // slot for a key the Anthropic profile never sets.
+    let _guard = lock_env();
+    let _env_guard = crate::storage::lock_test_env();
+    let dir = TempDir::new().expect("temp dir");
+    let keys = [
+        "JCODE_HOME",
+        "JCODE_NON_INTERACTIVE",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GITHUB_TOKEN",
+        "GEMINI_API_KEY",
+        "CURSOR_API_KEY",
+        "JCODE_TEST_9ROUTER_KEY",
+        "JCODE_OPENROUTER_API_BASE",
+        "JCODE_OPENROUTER_API_KEY_NAME",
+        "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+        "JCODE_OPENROUTER_ENV_FILE",
+        "JCODE_OPENROUTER_DEFAULT_MODEL",
+        "JCODE_OPENROUTER_CACHE_NAMESPACE",
+        "JCODE_ANTHROPIC_API_BASE",
+        "JCODE_ANTHROPIC_API_KEY_NAME",
+        "JCODE_ANTHROPIC_ENV_FILE",
+        "JCODE_ANTHROPIC_AUTH",
+        "JCODE_ANTHROPIC_AUTH_HEADER",
+        "JCODE_ANTHROPIC_HEADERS",
+        "JCODE_ANTHROPIC_MODEL",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_RUNTIME_PROVIDER",
+        "JCODE_ACTIVE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
+    ];
+    let saved: Vec<(String, Option<String>)> = keys
+        .iter()
+        .map(|k| (k.to_string(), std::env::var(k).ok()))
+        .collect();
+    for key in keys {
+        crate::env::remove_var(key);
+    }
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::set_var("JCODE_NON_INTERACTIVE", "1");
+    crate::env::set_var("JCODE_TEST_9ROUTER_KEY", "synthetic-9router-key");
+    std::fs::write(
+        dir.path().join("config.toml"),
+        r#"
+[provider]
+default_provider = "9router-anthropic"
+default_model = "cc/claude-sonnet-5-5(medium)"
+
+[providers.9router-anthropic]
+type = "anthropic-compatible"
+base_url = "http://127.0.0.1:18431/v1"
+auth = "bearer"
+api_key_env = "JCODE_TEST_9ROUTER_KEY"
+default_model = "cc/claude-sonnet-5-5(medium)"
+supports_reasoning_effort = false
+
+[[providers.9router-anthropic.models]]
+id = "cc/claude-sonnet-5-5(medium)"
+"#,
+    )
+    .expect("write config");
+    crate::config::invalidate_config_cache();
+    crate::auth::AuthStatus::invalidate_cached_status();
+
+    let provider = init_provider_for_validation(&ProviderChoice::Auto, None)
+        .await
+        .expect("auto provider should honor an anthropic-compatible default_provider");
+
+    assert_eq!(provider.model(), "cc/claude-sonnet-5-5(medium)");
+    assert_eq!(
+        std::env::var("JCODE_NAMED_PROVIDER_PROFILE").ok().as_deref(),
+        Some("9router-anthropic")
+    );
+
+    for (key, value) in saved {
+        if let Some(value) = value {
+            crate::env::set_var(&key, value);
+        } else {
+            crate::env::remove_var(&key);
+        }
+    }
+    crate::config::invalidate_config_cache();
+    crate::auth::AuthStatus::invalidate_cached_status();
+}
+
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
     reason = "test env locks intentionally stay held across provider init to isolate process-global auth env"
 )]
 async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_blocking() {

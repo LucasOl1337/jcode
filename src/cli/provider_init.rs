@@ -693,6 +693,23 @@ impl AutoProviderAvailability {
     }
 }
 
+/// Credential probe for a named `[providers.X]` profile whose env was just
+/// applied. Anthropic-compatible profiles run on the Anthropic Messages
+/// runtime and resolve their key through `JCODE_ANTHROPIC_*`, never through
+/// the OpenRouter slot.
+fn named_profile_has_credentials(profile: &crate::config::NamedProviderConfig) -> bool {
+    if matches!(
+        profile.provider_type,
+        crate::config::NamedProviderType::AnthropicCompatible
+    ) {
+        // The auth snapshot taken before the profile env existed reports no
+        // Anthropic credential; drop it so the MultiProvider sees the route.
+        auth::AuthStatus::invalidate_cached_status();
+        return provider::anthropic::has_anthropic_api_key();
+    }
+    provider::openrouter::has_credentials()
+}
+
 fn maybe_enable_compat_provider_for_auto() -> Result<bool> {
     let cfg = crate::config::config();
     if let Some(default_provider) = cfg
@@ -709,12 +726,12 @@ fn maybe_enable_compat_provider_for_auto() -> Result<bool> {
             return Ok(provider::openrouter::has_credentials());
         }
 
-        if cfg.providers.contains_key(default_provider) {
+        if let Some(profile) = cfg.providers.get(default_provider) {
             crate::provider_catalog::apply_named_provider_profile_env_from_config(
                 default_provider,
                 cfg,
             )?;
-            return Ok(provider::openrouter::has_credentials());
+            return Ok(named_profile_has_credentials(profile));
         }
     }
 

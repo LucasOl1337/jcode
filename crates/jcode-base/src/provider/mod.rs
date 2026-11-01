@@ -320,6 +320,24 @@ fn configured_standard_openrouter_profile_routes() -> Vec<ModelRoute> {
 
 /// Strip an explicit Jcode subscription prefix (`jcode:` or
 /// `jcode-subscription:`) from a model spec.
+/// Whether `profile` is `type = "anthropic-compatible"` and lists `model`
+/// literally in `models` or `default_model`.
+fn anthropic_compatible_profile_declares_model(
+    profile: &crate::config::NamedProviderConfig,
+    model: &str,
+) -> bool {
+    let model = model.trim();
+    matches!(
+        profile.provider_type,
+        crate::config::NamedProviderType::AnthropicCompatible
+    ) && !model.is_empty()
+        && (profile.models.iter().any(|configured| configured.id.trim() == model)
+            || profile
+                .default_model
+                .as_deref()
+                .is_some_and(|default| default.trim() == model))
+}
+
 pub(crate) fn jcode_subscription_model_prefix(model: &str) -> Option<&str> {
     let (prefix, rest) = model.split_once(':')?;
     let prefix = prefix.trim();
@@ -919,6 +937,28 @@ impl MultiProvider {
             .iter()
             .any(|route| route.available && route.model == model && route.api_method == api_method)
             .then_some(provider)
+    }
+
+    /// The Anthropic runtime when it currently serves a named
+    /// `type = "anthropic-compatible"` profile that declares `model` (in
+    /// `models` or `default_model`). Switching to the official Claude route
+    /// clears `JCODE_NAMED_PROVIDER_PROFILE`, so the marker identifies the
+    /// profile runtime in the Anthropic slot. Undeclared ids keep the global
+    /// routing they had before.
+    fn active_anthropic_compatible_profile_runtime(
+        &self,
+        model: &str,
+    ) -> Option<Arc<dyn Provider>> {
+        if self.active_provider() != ActiveProvider::Claude {
+            return None;
+        }
+        let profile_name = std::env::var("JCODE_NAMED_PROVIDER_PROFILE").ok()?;
+        let config = crate::config::config();
+        let profile = config.providers.get(profile_name.trim())?;
+        if !anthropic_compatible_profile_declares_model(profile, model) {
+            return None;
+        }
+        self.anthropic_provider()
     }
 
     /// Parse a `<name>:<model>` spec whose prefix is a user-defined named
@@ -2169,6 +2209,16 @@ impl Provider for MultiProvider {
                 );
             }
             return self.set_model_on_provider(target, target_model);
+        }
+
+        // Same rule for an active Anthropic-compatible named profile (a
+        // gateway such as 9Router serving `cc/claude-...(effort)`): its ids are
+        // provider-local and go to the profile runtime literally. Without this
+        // the `/` in the id sent the switch to OpenRouter.
+        if let Some(anthropic) = self.active_anthropic_compatible_profile_runtime(requested_model) {
+            anthropic.set_model(requested_model)?;
+            self.set_active_provider(ActiveProvider::Claude);
+            return Ok(());
         }
 
         // A custom OpenAI-compatible endpoint owns opaque, provider-local model
