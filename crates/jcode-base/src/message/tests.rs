@@ -866,6 +866,47 @@ fn push_reasoning_blocks_openrouter_replay_is_readable() {
 }
 
 #[test]
+fn push_reasoning_blocks_anthropic_signed_empty_text_is_replayed() {
+    // 30/10/2026 live proof: Opus 5.5 through 9Router /v1/messages streamed
+    // `{"type":"thinking","thinking":""}` plus a 1040-char signature_delta.
+    // The block was dropped, so the next request lost the signed thinking.
+    let mut blocks = Vec::new();
+    push_reasoning_blocks(&mut blocks, "Anthropic", "", Some("CAQShQYK"), true);
+    assert_eq!(blocks.len(), 1);
+    match &blocks[0] {
+        ContentBlock::AnthropicThinking {
+            thinking,
+            signature,
+        } => {
+            assert_eq!(thinking, "");
+            assert_eq!(signature, "CAQShQYK");
+        }
+        other => panic!("expected AnthropicThinking, got {other:?}"),
+    }
+
+    // Turns build text first; the signed thinking must still lead the turn.
+    let mut blocks = vec![ContentBlock::Text {
+        text: "checking".to_string(),
+        cache_control: None,
+    }];
+    push_reasoning_blocks(&mut blocks, "anthropic", "", Some("CAQShQYK"), true);
+    assert!(matches!(blocks[0], ContentBlock::AnthropicThinking { .. }));
+    assert!(matches!(blocks[1], ContentBlock::Text { .. }));
+
+    // The agent's MultiProvider names the active Claude route "Claude".
+    let mut blocks = Vec::new();
+    push_reasoning_blocks(&mut blocks, "Claude", "", Some("CAQShQYK"), true);
+    assert!(matches!(blocks[0], ContentBlock::AnthropicThinking { .. }));
+
+    // Without replay or without a signature there is nothing to keep.
+    let mut blocks = Vec::new();
+    push_reasoning_blocks(&mut blocks, "anthropic", "", Some("CAQShQYK"), false);
+    push_reasoning_blocks(&mut blocks, "anthropic", "", Some(""), true);
+    push_reasoning_blocks(&mut blocks, "openrouter", "", Some("CAQShQYK"), true);
+    assert!(blocks.is_empty());
+}
+
+#[test]
 fn push_reasoning_blocks_skips_empty() {
     let mut blocks = Vec::new();
     push_reasoning_blocks(&mut blocks, "anthropic", "", None, false);

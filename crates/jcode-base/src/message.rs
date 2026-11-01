@@ -240,6 +240,13 @@ pub fn redact_secrets(text: &str) -> String {
 pub const GENERATED_IMAGE_TOOL_NAME: &str = "image_generation";
 pub const GENERATED_IMAGE_MAX_AUTO_VISION_BYTES: u64 = 20 * 1024 * 1024;
 
+/// Whether a provider name denotes the Anthropic Messages runtime. The
+/// runtime reports `anthropic`, while the agent's `MultiProvider` reports
+/// `Claude` for the same active route; both must replay signed thinking.
+pub fn is_anthropic_provider_name(provider_name: &str) -> bool {
+    provider_name.eq_ignore_ascii_case("anthropic") || provider_name.eq_ignore_ascii_case("claude")
+}
+
 /// Persist the model's reasoning for an assistant turn.
 ///
 /// This always keeps a readable, history-only copy of the reasoning in the
@@ -256,19 +263,35 @@ pub fn push_reasoning_blocks(
     reasoning_signature: Option<&str>,
     store_replay_context: bool,
 ) {
-    if reasoning_content.is_empty() {
+    // Claude can stream a signed thinking block with empty text (thinking
+    // display omitted). The signature alone is the replay context and must
+    // go back on the next request, so keep it even without readable text.
+    let signed_anthropic_replay = store_replay_context
+        && is_anthropic_provider_name(provider_name)
+        && reasoning_signature.is_some_and(|s| !s.is_empty());
+    if reasoning_content.is_empty() && !signed_anthropic_replay {
         return;
     }
 
     // Whether the replay block we stored already contains the readable text.
     let mut readable_replay_stored = false;
     if store_replay_context {
-        if provider_name.eq_ignore_ascii_case("anthropic") {
+        if is_anthropic_provider_name(provider_name) {
             if let Some(signature) = reasoning_signature.filter(|s| !s.is_empty()) {
-                blocks.push(ContentBlock::AnthropicThinking {
-                    thinking: reasoning_content.to_string(),
-                    signature: signature.to_string(),
-                });
+                // Claude emits thinking before text/tool_use, and the API
+                // requires the signed block first when it is replayed in an
+                // assistant turn that has tool_use.
+                let at = blocks
+                    .iter()
+                    .position(|block| !matches!(block, ContentBlock::AnthropicThinking { .. }))
+                    .unwrap_or(blocks.len());
+                blocks.insert(
+                    at,
+                    ContentBlock::AnthropicThinking {
+                        thinking: reasoning_content.to_string(),
+                        signature: signature.to_string(),
+                    },
+                );
                 readable_replay_stored = true;
             }
         } else if provider_name.eq_ignore_ascii_case("openai") {

@@ -179,10 +179,11 @@ pub fn stores_reasoning_content_for_context(provider_name: &str) -> bool {
     if !crate::config::config().provider.preserve_reasoning_context {
         return false;
     }
-    matches!(
-        provider_name.to_ascii_lowercase().as_str(),
-        "openrouter" | "anthropic" | "openai"
-    )
+    crate::message::is_anthropic_provider_name(provider_name)
+        || matches!(
+            provider_name.to_ascii_lowercase().as_str(),
+            "openrouter" | "openai"
+        )
 }
 
 // Keep inactive direct profiles on the same 15-minute soft-refresh cadence as
