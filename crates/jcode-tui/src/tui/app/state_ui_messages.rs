@@ -111,6 +111,16 @@ impl App {
         if message.role == "tool" && message.duration_secs.is_none() {
             message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content);
         }
+        // A tool row appended here just finished, unless history already
+        // settled its time (restored rows are recorded before they get here).
+        // Unit tests skip the stamp: the clock is process-wide and reads the
+        // wall clock, which would make row text depend on test order.
+        #[cfg(not(test))]
+        if message.role == "tool"
+            && let Some(tool) = &message.tool_data
+        {
+            jcode_tui_messages::note_tool_finished_now(&tool.id);
+        }
         compact_display_message_tool_data(&mut message);
         // Keep Ctrl+L's spacer as a clear boundary when new content arrives.
         // The renderer packs only the content after it while following the tail,

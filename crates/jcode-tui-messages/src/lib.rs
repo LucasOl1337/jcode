@@ -3,6 +3,7 @@ mod cache;
 mod message;
 mod prepared;
 mod swarm_collapse;
+mod tool_clock;
 mod wrapped_line_map;
 
 pub use anchor::{
@@ -27,4 +28,5 @@ pub use swarm_collapse::{
     encode_collapsible_swarm_content, parse_collapsible_swarm_content, swarm_preview_line,
     toggle_collapsible_swarm_content,
 };
+pub use tool_clock::{note_tool_finished_now, note_tool_history, tool_finished_at_ms};
 pub use wrapped_line_map::WrappedLineMap;

@@ -37,6 +37,47 @@ fn render_tool_message_groups_duration_and_tokens() {
 }
 
 #[test]
+fn render_tool_message_appends_local_finish_time_when_known() {
+    let finished_at_ms = 1_794_664_440_000_i64;
+    let expected = chrono::DateTime::from_timestamp_millis(finished_at_ms)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string();
+    let tool = |id: &str| crate::message::ToolCall {
+        id: id.into(),
+        name: "bash".into(),
+        input: serde_json::json!({}),
+        intent: Some("A completed tool call with a fairly long description".into()),
+        thought_signature: None,
+    };
+    jcode_tui_messages::note_tool_history("clocked-row", Some(finished_at_ms));
+    jcode_tui_messages::note_tool_history("unclocked-row", None);
+    let mut clocked = DisplayMessage::tool("ok", tool("clocked-row"));
+    clocked.duration_secs = Some(2.4);
+    let mut unclocked = DisplayMessage::tool("ok", tool("unclocked-row"));
+    unclocked.duration_secs = Some(2.4);
+    let tokens = crate::util::format_approx_token_count(crate::util::estimate_tokens("ok"));
+    for width in [32, 60, 120] {
+        let lines = render_tool_message(&clocked, width, crate::config::DiffDisplayMode::Off);
+        let row = extract_line_text(&lines[0]);
+        assert!(
+            row.ends_with(&format!("2.4s, {tokens} · {expected}")),
+            "{row}"
+        );
+        assert!(lines[0].width() < width as usize, "{row}");
+
+        let lines = render_tool_message(&unclocked, width, crate::config::DiffDisplayMode::Off);
+        let row = extract_line_text(&lines[0]);
+        assert!(row.ends_with(&format!("2.4s, {tokens}")), "{row}");
+    }
+    assert_ne!(
+        clocked.stable_cache_hash(),
+        DisplayMessage::tool("ok", tool("unclocked-row")).stable_cache_hash()
+    );
+}
+
+#[test]
 fn batch_subcall_groups_duration_and_tokens() {
     let tool = crate::message::ToolCall {
         id: "timed-child".into(),

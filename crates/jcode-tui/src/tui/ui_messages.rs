@@ -3931,8 +3931,12 @@ pub(crate) fn render_tool_message(
     let row_width = block_width.saturating_sub(1);
     let display_name = tools_ui::resolve_display_tool_name(&tc.name).to_string();
     let base_prefix = format!("  {} {} ", icon, display_name);
+    let clock_label = tools_ui::tool_clock_label(&tc.id);
     let token_suffix_width =
-        UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str());
+        UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str())
+            + clock_label
+                .as_deref()
+                .map_or(0, |clock| UnicodeWidthStr::width(clock) + 3);
     let edit_suffix_width = if show_header_diff_counts {
         UnicodeWidthStr::width(format!(" (+{} -{})", additions, deletions).as_str())
     } else {
@@ -4036,6 +4040,12 @@ pub(crate) fn render_tool_message(
         msg.duration_secs,
         &msg.content,
     ));
+    if let Some(clock) = clock_label {
+        usage_spans.push(Span::styled(
+            format!(" · {clock}"),
+            Style::default().fg(dim_color()),
+        ));
+    }
     let token_suffix = Line::from(usage_spans);
 
     let rendered_tool_line = super::truncate_line_preserving_suffix_to_width(

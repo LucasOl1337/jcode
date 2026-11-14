@@ -228,6 +228,14 @@ impl DisplayMessage {
                     .or_else(|| Self::tool_duration_from_output(&item.content))
             })
             .flatten();
+        if item.role == "tool"
+            && let Some(tool) = &item.tool_data
+        {
+            crate::tool_clock::note_tool_history(
+                &tool.id,
+                item.timestamp.map(|ts| ts.timestamp_millis()),
+            );
+        }
         Self {
             role: item.role,
             content: item.content,
@@ -303,6 +311,9 @@ impl DisplayMessage {
         self.tool_calls.hash(&mut hasher);
         self.title.hash(&mut hasher);
         if let Some(tool) = &self.tool_data {
+            if self.role == "tool" {
+                crate::tool_clock::tool_finished_at_ms(&tool.id).hash(&mut hasher);
+            }
             tool.id.hash(&mut hasher);
             tool.name.hash(&mut hasher);
             hash_json_value(&tool.input, &mut hasher);
@@ -523,6 +534,7 @@ mod tests {
             tool_calls: vec![],
             tool_data: None,
             stored_index: None,
+            timestamp: None,
         };
         assert_eq!(
             DisplayMessage::from_rendered_message(row.clone()).duration_secs,
@@ -556,6 +568,7 @@ mod tests {
             tool_calls: vec!["read".to_string()],
             tool_data: None,
             stored_index: None,
+            timestamp: None,
         };
 
         let display = DisplayMessage::from_rendered_message(rendered);

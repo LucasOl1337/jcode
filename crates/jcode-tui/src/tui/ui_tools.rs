@@ -1489,6 +1489,18 @@ pub(super) fn tool_usage_label(tokens: &str, seconds: Option<f32>, output: &str)
     }
 }
 
+/// Local wall-clock time a tool row finished, e.g. `10:54`, when known.
+pub(super) fn tool_clock_label(tool_id: &str) -> Option<String> {
+    let finished_at_ms = jcode_tui_messages::tool_finished_at_ms(tool_id)?;
+    let finished_at = chrono::DateTime::from_timestamp_millis(finished_at_ms)?;
+    Some(
+        finished_at
+            .with_timezone(&chrono::Local)
+            .format("%H:%M")
+            .to_string(),
+    )
+}
+
 /// Style elapsed time independently from output token volume.
 pub(super) fn tool_usage_spans(
     label: String,
