@@ -17,6 +17,10 @@ The October 2026 integration preserves these changes:
   readers. The integration retains upstream background handoff, recovery
   deduplication and worker output handling.
 
+The November 2026 change adds the wall-clock time each tool finished to its
+transcript row (`· 3m, 108 tok · 10:54`). The launcher sets
+`JCODE_CLOCK_UTC_OFFSET=-03:00` so remote servers show Brasilia time too.
+
 ## Installing a validated build
 
 Build with a recorded source commit and retain a SHA-256 checksum. Use a Linux
@@ -43,6 +47,15 @@ migration markers are marked complete so the upgrade keeps the user's choices.
 The launcher pins project resume and disables official auto-update with
 `JCODE_CHECK_UPDATES=0`, so an official download cannot silently remove local
 patches. An existing `JCODE_DISABLE_CLAUDE_MCP` launcher policy is retained.
+A running daemon tells clients to reload it as soon as the installed binary
+is newer than its own, which interrupts every active session. To install while
+sessions are working, place the checked binary in
+`~/.jcode/builds/versions/LABEL/jcode-linux-x86_64.bin` first and give it the
+running binary's modification time (`touch -r`); the installer keeps an
+existing binary whose checksum matches, and omitting `--reload` then leaves the
+daemon alone. New windows use the new build; the daemon follows at its next
+restart.
+
 Promotion and reload use the native Jcode commands; a running shared daemon is
 verified through its actual `/proc` executable and checksum, not just symlinks.
 

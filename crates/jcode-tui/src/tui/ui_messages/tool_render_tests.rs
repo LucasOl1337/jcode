@@ -38,12 +38,16 @@ fn render_tool_message_groups_duration_and_tokens() {
 
 #[test]
 fn render_tool_message_appends_local_finish_time_when_known() {
+    use crate::tui::ui::tools_ui::{format_tool_clock, tool_clock_label};
+    // 2026-11-14T13:54:00Z
     let finished_at_ms = 1_794_664_440_000_i64;
-    let expected = chrono::DateTime::from_timestamp_millis(finished_at_ms)
-        .unwrap()
-        .with_timezone(&chrono::Local)
-        .format("%H:%M")
-        .to_string();
+    let brasilia: chrono::FixedOffset = "-03:00".parse().unwrap();
+    assert_eq!(
+        format_tool_clock(finished_at_ms, Some(brasilia)).as_deref(),
+        Some("10:54")
+    );
+    assert_eq!(format_tool_clock(i64::MAX, Some(brasilia)), None);
+    assert_eq!(tool_clock_label("never-recorded-row"), None);
     let tool = |id: &str| crate::message::ToolCall {
         id: id.into(),
         name: "bash".into(),
@@ -53,6 +57,8 @@ fn render_tool_message_appends_local_finish_time_when_known() {
     };
     jcode_tui_messages::note_tool_history("clocked-row", Some(finished_at_ms));
     jcode_tui_messages::note_tool_history("unclocked-row", None);
+    let expected = tool_clock_label("clocked-row").expect("recorded time renders");
+    assert_eq!(expected.len(), 5, "{expected}");
     let mut clocked = DisplayMessage::tool("ok", tool("clocked-row"));
     clocked.duration_secs = Some(2.4);
     let mut unclocked = DisplayMessage::tool("ok", tool("unclocked-row"));

@@ -127,6 +127,8 @@ set -eu
 # Lucas fork: retain project resume and avoid official updates replacing patches.
 export JCODE_RESUME_PROJECT_SCOPE=1
 export JCODE_CHECK_UPDATES=0
+# Tool rows show Brasilia time on every machine, including UTC/CET servers.
+export JCODE_CLOCK_UTC_OFFSET="${JCODE_CLOCK_UTC_OFFSET:--03:00}"
 '''
     if disable_claude:
         wrapper += 'export JCODE_DISABLE_CLAUDE_MCP=1\n'

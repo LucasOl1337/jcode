@@ -1489,16 +1489,30 @@ pub(super) fn tool_usage_label(tokens: &str, seconds: Option<f32>, output: &str)
     }
 }
 
-/// Local wall-clock time a tool row finished, e.g. `10:54`, when known.
+/// Wall-clock time a tool row finished, e.g. `10:54`, when known.
 pub(super) fn tool_clock_label(tool_id: &str) -> Option<String> {
-    let finished_at_ms = jcode_tui_messages::tool_finished_at_ms(tool_id)?;
+    static OFFSET: std::sync::OnceLock<Option<chrono::FixedOffset>> = std::sync::OnceLock::new();
+    let offset = *OFFSET.get_or_init(|| {
+        std::env::var("JCODE_CLOCK_UTC_OFFSET")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+    });
+    format_tool_clock(jcode_tui_messages::tool_finished_at_ms(tool_id)?, offset)
+}
+
+/// `HH:MM` of a unix-millisecond instant. `JCODE_CLOCK_UTC_OFFSET` (e.g.
+/// `-03:00`) pins the zone so a session viewed over SSH shows the viewer's
+/// clock rather than the host's; without it the host's local zone is used.
+pub(super) fn format_tool_clock(
+    finished_at_ms: i64,
+    offset: Option<chrono::FixedOffset>,
+) -> Option<String> {
     let finished_at = chrono::DateTime::from_timestamp_millis(finished_at_ms)?;
-    Some(
-        finished_at
-            .with_timezone(&chrono::Local)
-            .format("%H:%M")
-            .to_string(),
-    )
+    Some(match offset {
+        Some(offset) => finished_at.with_timezone(&offset).format("%H:%M"),
+        None => finished_at.with_timezone(&chrono::Local).format("%H:%M"),
+    }
+    .to_string())
 }
 
 /// Style elapsed time independently from output token volume.
