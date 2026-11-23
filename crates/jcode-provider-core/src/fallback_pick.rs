@@ -526,7 +526,7 @@ mod unified_rank_tests {
     #[test]
     fn pool_order_then_newest_generation() {
         let routes = vec![
-            route("gpt-6.1-sol", "openai-api"),
+            route("gpt-6.2-sol", "openai-api"),
             route("claude-fable-5", "claude-oauth@claude-fox"),
             route("claude-opus-5-5", "claude-oauth@claude-fox"),
             route("claude-opus-5-5", "claude-oauth@claude-otter"),
@@ -536,7 +536,7 @@ mod unified_rank_tests {
             .into();
         let ranked = rank_fallback_routes(
             &routes,
-            "gpt-6.1-sol",
+            "gpt-6.2-sol",
             "OpenAI",
             "openai-oauth@openai-fox",
             FallbackPickOptions::default(),

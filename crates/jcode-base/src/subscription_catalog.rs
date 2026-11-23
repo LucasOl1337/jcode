@@ -158,9 +158,18 @@ pub const CURATED_MODELS: &[CuratedModel] = &[
         note: "Fast, low-cost model; routed server-side to Anthropic by the jcode router.",
     },
     CuratedModel {
+        id: "gpt-6.2-sol",
+        display_name: "GPT-6.2 Sol",
+        aliases: &["gpt-6.2-sol", "gpt 6.2 sol", "sol"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: JcodeTier::Plus,
+        note: "Frontier model; routed server-side to OpenAI by the jcode router.",
+    },
+    CuratedModel {
         id: "gpt-6.1-sol",
         display_name: "GPT-6.1 Sol",
-        aliases: &["gpt-6.1-sol", "gpt 6.1 sol", "sol"],
+        aliases: &["gpt-6.1-sol", "gpt 6.1 sol"],
         default_enabled: false,
         routing_policy: UpstreamRoutingPolicy::ServerManaged,
         min_tier: JcodeTier::Plus,
@@ -403,6 +412,7 @@ mod tests {
         "claude-opus-5-5",
         "claude-sonnet-5-5",
         "claude-haiku-5-5",
+        "gpt-6.2-sol",
         "gpt-6.1-sol",
         "claude-sonnet-4-6",
     ];
@@ -424,7 +434,8 @@ mod tests {
             canonical_model_id("Claude Haiku 5.5"),
             Some("claude-haiku-5-5")
         );
-        assert_eq!(canonical_model_id("sol"), Some("gpt-6.1-sol"));
+        assert_eq!(canonical_model_id("sol"), Some("gpt-6.2-sol"));
+        assert_eq!(canonical_model_id("GPT 6.2 Sol"), Some("gpt-6.2-sol"));
         assert_eq!(canonical_model_id("GPT 6.1 Sol"), Some("gpt-6.1-sol"));
         assert_eq!(canonical_model_id("unknown-model"), None);
     }
@@ -510,6 +521,10 @@ mod tests {
             canonical_model_id("gpt-6.1-sol@openai"),
             Some("gpt-6.1-sol")
         );
+        assert_eq!(
+            canonical_model_id("gpt-6.2-sol@openai"),
+            Some("gpt-6.2-sol")
+        );
     }
 
     #[test]
@@ -544,7 +559,7 @@ mod tests {
                 .iter()
                 .all(|model| model.min_tier != JcodeTier::Flagship)
         );
-        assert_eq!(CURATED_MODELS.len(), 5);
+        assert_eq!(CURATED_MODELS.len(), 6);
         assert!(find_curated_model("magistral-small-1.2").is_none());
         assert!(find_curated_model("gemma-3-27b").is_none());
         assert!(find_curated_model("llama-4-maverick").is_none());

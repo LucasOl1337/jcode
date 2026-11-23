@@ -471,6 +471,7 @@ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_route
                 "claude-sonnet-5-5",
                 "claude-sonnet-4-6",
                 "claude-haiku-5-5",
+                "gpt-6.2-sol",
                 "gpt-6.1-sol",
             ])
         );
